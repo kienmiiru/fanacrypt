@@ -43,7 +43,7 @@ A proof-of-concept implementation showcasing distributed file uploads using Uplo
 
 4. Migrate the Database
    ```bash
-   npm drizzle-kit push
+   npx drizzle-kit push
    ```
    
 6. Run the development server:
