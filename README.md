@@ -75,7 +75,7 @@ src/
     └── types.ts         # Type definitions
 ```
 
-## 🌟 Why This PoC?
+## 🌟 Why?
 
 This project demonstrates:
 - Handling large file uploads efficiently
