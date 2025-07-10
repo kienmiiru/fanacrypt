@@ -94,4 +94,4 @@ This project demonstrates:
 - [ ] User authentication
 - [ ] Chunk size optimization
 
-Made with ❤️ by [Fana] | [GitHub](https://github.com/MasFana)
+Made with ❤️ by **Fana** | [GitHub](https://github.com/MasFana)
