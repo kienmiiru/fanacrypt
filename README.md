@@ -2,7 +2,7 @@
 
 A proof-of-concept implementation showcasing distributed file uploads using UploadThing's API with file splitting and parallel uploads.
 
-![File Upload UI Preview](https://i.imgur.com/JQZ1l1a.png)
+![File Upload UI Preview](image.png)
 
 ## ✨ Features
 
