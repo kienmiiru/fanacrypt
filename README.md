@@ -87,6 +87,7 @@ This project demonstrates:
 ## 🚧 Future Improvements
 
 - [ ] Add Handler to Delete file if theere is Error on one Node
+- [ ] Make Node Configurable on .env
 - [ ] Real upload progress (currently simulated)
 - [ ] Resumable uploads
 - [ ] File previews
