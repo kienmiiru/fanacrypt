@@ -41,7 +41,12 @@ A proof-of-concept implementation showcasing distributed file uploads using Uplo
    ```
    Fill in your UploadThing API keys and database configuration.
 
-4. Run the development server:
+4. Migrate the Database
+   ```bash
+   npm drizzle-kit push
+   ```
+   
+6. Run the development server:
    ```bash
    npm run dev
    ```
