@@ -86,7 +86,7 @@ This project demonstrates:
 
 ## 🚧 Future Improvements
 
-- [ ] Migrate to API to Resolve 1MB Body Limit
+- [ ] Add Handler to Delete file if theere is Error on one Node
 - [ ] Real upload progress (currently simulated)
 - [ ] Resumable uploads
 - [ ] File previews

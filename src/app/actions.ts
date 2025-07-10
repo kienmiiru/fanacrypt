@@ -62,6 +62,7 @@ export async function UploadFiles(files: File[]) {
                 await db.insert(uploads).values({
                     originalFileName: file.name,
                     mimeType: file.type,
+                    originalSize:file.size,
                     uploadParts: fileChunksDetails
                 });
             } catch (fileError) {
