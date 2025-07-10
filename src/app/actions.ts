@@ -22,7 +22,7 @@ async function utUploadMultiFile(files: File[]) {
     const details: UploadFileResult[] = []
     const results = await Promise.all(
         files.map(async (file, i) => {
-            const result = utUploadFiles([file], i as UtServerNumber)
+            const result = await utUploadFiles([file], i as UtServerNumber)
             return { index: i, result }
         })
     )
@@ -30,7 +30,7 @@ async function utUploadMultiFile(files: File[]) {
     results
         .sort((a, b) => a.index - b.index)
         .forEach(async ({ result }) => {
-            details.push(...await result)
+            details.push(...result)
         })
 
     return details;
@@ -38,36 +38,50 @@ async function utUploadMultiFile(files: File[]) {
 
 export async function UploadFiles(files: File[]) {
     try {
-        files.forEach(async (file) => {
-            const fileChunks = await splitFile(file, 5)
-            const fileChunksDetails: UploadPart[] = (await utUploadMultiFile(fileChunks)).map((chunk) => {
-                if (chunk.data?.key) {
+        // Process all files in parallel but wait for all to complete
+        await Promise.all(files.map(async (file) => {
+            try {
+                const fileChunks = await splitFile(file, 5);
+
+                // Upload all chunks in parallel
+                const uploadResults = await utUploadMultiFile(fileChunks);
+
+                // Process upload results
+                const fileChunksDetails: UploadPart[] = uploadResults.map((chunk) => {
+                    if (!chunk.data?.key) {
+                        throw new Error(`Failed to upload chunk: Missing key for ${chunk.data?.name}`);
+                    }
                     return {
                         key: chunk.data.key,
                         name: chunk.data.name,
                         url: chunk.data.ufsUrl,
-                    }
-                } else {
-                    throw new Error("Failed to Parse Chunks details")
-                }
-            })
-            await db.insert(uploads).values({
-                originalFileName: file.name,
-                mimeType: file.type,
-                uploadParts: fileChunksDetails
-            })
-        })
-        return true
+                    };
+                });
+                console.log(JSON.stringify(uploadResults))
+                // Insert into database
+                await db.insert(uploads).values({
+                    originalFileName: file.name,
+                    mimeType: file.type,
+                    uploadParts: fileChunksDetails
+                });
+            } catch (fileError) {
+                console.error(`Error processing file ${file.name}:`, fileError);
+                throw fileError; // Re-throw to be caught by the outer try-catch
+            }
+        }));
+
+        return true;
     } catch (e) {
-        console.log(e)
-        return false
+        console.error("Error in UploadFiles:", e);
+        return false;
     }
 }
+
 export async function DeleteFile(id: UUID) {
     try {
         const listKey = await db.select().from(uploads).where(eq(uploads.id, id));
-        await Promise.all(listKey.map(async (key, i) => {
-            utDeleteFile(key.id, i as UtServerNumber);
+        await Promise.all(listKey[0].uploadParts.map(async (key, i) => {
+            utDeleteFile(key.key, i as UtServerNumber);
         })).then(async () => {
             await db.delete(uploads).where(eq(uploads.id, listKey[0].id))
         })
@@ -82,20 +96,40 @@ export async function GetAllFiles() {
     return files;
 }
 
-export async function GetFile(id: UUID): Promise<File> {
-    const listKey = await db.select().from(uploads).where(eq(uploads.id, id));
-    const responses = await Promise.all(listKey[0].uploadParts.map(async (e, i) => {
-        return { index: i, response: fetch(e.url) }
-    }))
-    const blobs = await Promise.all(responses.sort((a, b) => a.index - b.index).map(async e => await (await e.response).blob()))
-    return await combineFiles(blobs.map(e => new File([e], listKey[0].originalFileName)), listKey[0].originalFileName)
+export async function GetFile(id: UUID): Promise<{ file: File, name: string }> {
+    try {
+        const listKey = await db.select().from(uploads).where(eq(uploads.id, id));
+        console.log(listKey[0].uploadParts)
+        const responses = await Promise.all(
+            listKey[0].uploadParts.map(async (part) => {
+                const response = await fetch(part.url);
+                if (!response.ok) throw new Error(`Failed to fetch part ${part.name}`);
+                return {
+                    name: part.name,
+                    blob: await response.blob()
+                };
+            })
+        );
+
+        // Create File objects from blobs with their original part names
+        const chunkFiles = responses.map(response =>
+            new File([response.blob], response.name, {
+                type: listKey[0].mimeType
+            })
+        );
+
+        return { file: await combineFiles(chunkFiles, listKey[0].originalFileName), name: listKey[0].originalFileName };
+    } catch (error) {
+        console.error("Error in GetFile:", error);
+        throw error;
+    }
 }
 
 async function utDeleteFile(fileId: string | string[], server: UtServerNumber) {
     if (!fileId) {
         throw new Error("File ID is required");
     }
-    const response = await utpApis[server].deleteFiles(fileId);
+    const response = await utpApis[server].deleteFiles(fileId, { keyType: "fileKey" });
     if (!response) {
         throw new Error("Failed to delete file");
     }

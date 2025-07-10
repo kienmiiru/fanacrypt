@@ -6,7 +6,11 @@ export async function splitFile(file: File, splitSize: number): Promise<File[]> 
     if (file.size === 0) {
         throw new Error("Cannot split empty file");
     }
-    const chunkSize = Math.ceil(file.size / 5);
+    if (splitSize <= 0) {
+        throw new Error("Split size must be greater than 0");
+    }
+
+    const chunkSize = Math.ceil(file.size / splitSize);
     const fileChunks: File[] = [];
 
     for (let i = 0; i < splitSize; i++) {
@@ -37,31 +41,42 @@ export async function combineFiles(chunks: File[], originalName: string): Promis
         throw new Error("Original filename is required");
     }
 
+    // Sort chunks by their part number to ensure correct order
+    const sortedChunks = chunks.sort((a, b) => {
+        const aPart = parseInt(a.name.split('.part')[1] || '0');
+        const bPart = parseInt(b.name.split('.part')[1] || '0');
+        return aPart - bPart;
+    });
+
     // Verify all chunks have the same type
-    const fileType = chunks[0].type;
-    if (!chunks.every(chunk => chunk.type === fileType)) {
+    const fileType = sortedChunks[0].type;
+    if (!sortedChunks.every(chunk => chunk.type === fileType)) {
         throw new Error("Inconsistent file types among chunks");
     }
 
-    // Read all chunks as ArrayBuffer (parallel for better performance)
-    const chunkBuffers = await Promise.all(
-        chunks.map(chunk => chunk.arrayBuffer())
-    );
+    try {
+        // Read all chunks as ArrayBuffer (parallel for better performance)
+        const chunkBuffers = await Promise.all(
+            sortedChunks.map(chunk => chunk.arrayBuffer())
+        );
 
-    // Combine all buffers
-    const totalLength = chunkBuffers.reduce((acc, buffer) => acc + buffer.byteLength, 0);
-    const combinedBuffer = new Uint8Array(totalLength);
+        // Combine all buffers
+        const totalLength = chunkBuffers.reduce((acc, buffer) => acc + buffer.byteLength, 0);
+        const combinedBuffer = new Uint8Array(totalLength);
 
-    let offset = 0;
-    chunkBuffers.forEach(buffer => {
-        const uint8Array = new Uint8Array(buffer);
-        combinedBuffer.set(uint8Array, offset);
-        offset += uint8Array.length;
-    });
+        let offset = 0;
+        chunkBuffers.forEach(buffer => {
+            const uint8Array = new Uint8Array(buffer);
+            combinedBuffer.set(uint8Array, offset);
+            offset += uint8Array.length;
+        });
 
-    // Create final combined file
-    return new File([combinedBuffer], originalName, {
-        type: fileType,
-        lastModified: Date.now()
-    });
+        // Create final combined file
+        return new File([combinedBuffer], originalName, {
+            type: fileType,
+            lastModified: Date.now()
+        });
+    } catch (error) {
+        throw new Error(`Failed to combine files: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }

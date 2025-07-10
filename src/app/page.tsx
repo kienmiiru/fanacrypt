@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { UploadFiles, GetAllFiles, DeleteFile, GetFile } from './actions'; // Adjust import path as needed
+import { UploadFiles, GetAllFiles, DeleteFile, GetFile } from './actions';
 import { UploadPart } from '@/lib';
 import { UUID } from 'crypto';
 
@@ -14,17 +14,27 @@ export default function FileUploadUI() {
     createdAt: Date | null;
   }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
   useEffect(() => {
     loadFiles();
   }, []);
 
   const loadFiles = async () => {
-    const loadedFiles = await GetAllFiles();
-    setFiles(loadedFiles);
+    setIsLoadingFiles(true);
+    try {
+      const loadedFiles = await GetAllFiles();
+      setFiles(loadedFiles);
+    } catch (error) {
+      console.error('Failed to load files:', error);
+    } finally {
+      setIsLoadingFiles(false);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -40,19 +50,20 @@ export default function FileUploadUI() {
     setUploadProgress(0);
 
     try {
-      const success = await UploadFiles([selectedFile]);
-      if (success) {
-        // Simulate progress (in a real app, you'd track actual progress)
-        const interval = setInterval(() => {
-          setUploadProgress((prev) => {
-            if (prev >= 100) {
-              clearInterval(interval);
-              return 100;
-            }
-            return prev + 10;
-          });
-        }, 300);
+      // Simulate progress (replace with actual progress events if available)
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => {
+          const newProgress = prev + Math.random() * 10;
+          return newProgress >= 100 ? 100 : newProgress;
+        });
+      }, 300);
 
+      const success = await UploadFiles([selectedFile]);
+      clearInterval(progressInterval);
+
+      if (success) {
+        setUploadProgress(100);
+        await new Promise(resolve => setTimeout(resolve, 500)); // Show completion briefly
         await loadFiles();
         setSelectedFile(null);
         if (fileInputRef.current) {
@@ -68,27 +79,41 @@ export default function FileUploadUI() {
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm('🗑️ Are you sure you want to delete this file?')) {
+    if (!window.confirm('🗑️ Are you sure you want to delete this file?')) return;
+
+    setIsDeleting(id);
+    try {
       const success = await DeleteFile(id as UUID);
       if (success) {
         await loadFiles();
       }
+    } catch (error) {
+      console.error('Delete failed:', error);
+    } finally {
+      setIsDeleting(null);
     }
   };
 
   const handleDownload = async (id: string) => {
+    setIsDownloading(id);
     try {
-      const file = await GetFile(id as UUID);
-      const url = URL.createObjectURL(file);
+      const fileData = await GetFile(id as UUID);
+      const url = URL.createObjectURL(fileData.file);
       const a = document.createElement('a');
       a.href = url;
-      a.download = file.name;
+      a.download = fileData.name;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
     } catch (error) {
       console.error('Download failed:', error);
+    } finally {
+      setIsDownloading(null);
     }
   };
 
@@ -125,10 +150,14 @@ export default function FileUploadUI() {
                 onChange={handleFileChange}
                 className="hidden"
                 id="file-upload"
+                disabled={isUploading}
               />
               <label
                 htmlFor="file-upload"
-                className="px-4 py-2 bg-blue-50 text-blue-600 rounded-md cursor-pointer hover:bg-blue-100 transition"
+                className={`px-4 py-2 rounded-md cursor-pointer transition ${isUploading
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                  }`}
               >
                 📂 Choose File
               </label>
@@ -138,19 +167,32 @@ export default function FileUploadUI() {
             </div>
 
             {selectedFile && (
-              <div className="flex items-center space-x-4">
+              <div className="flex flex-col space-y-2">
                 <button
                   onClick={handleUpload}
                   disabled={isUploading}
-                  className={`px-4 py-2 rounded-md ${isUploading ? 'bg-gray-300' : 'bg-blue-600 hover:bg-blue-700'} text-white transition`}
+                  className={`px-4 py-2 rounded-md flex items-center justify-center ${isUploading
+                    ? 'bg-blue-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                    } text-white transition`}
                 >
-                  {isUploading ? '⏳ Uploading...' : '🚀 Upload'}
+                  {isUploading ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Uploading... ({Math.round(uploadProgress)}%)
+                    </>
+                  ) : (
+                    '🚀 Upload'
+                  )}
                 </button>
 
                 {isUploading && (
-                  <div className="flex-1 bg-gray-200 rounded-full h-2.5">
+                  <div className="w-full bg-gray-200 rounded-full h-2.5">
                     <div
-                      className="bg-blue-600 h-2.5 rounded-full"
+                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
                       style={{ width: `${uploadProgress}%` }}
                     ></div>
                   </div>
@@ -164,7 +206,14 @@ export default function FileUploadUI() {
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-700 mb-4">🗂️ Your Files</h2>
 
-          {files.length === 0 ? (
+          {isLoadingFiles ? (
+            <div className="flex justify-center py-8">
+              <svg className="animate-spin h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+          ) : files.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               📭 No files uploaded yet
             </div>
@@ -199,15 +248,39 @@ export default function FileUploadUI() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                         <button
                           onClick={() => handleDownload(file.id)}
-                          className="text-blue-600 hover:text-blue-900 mr-4"
+                          disabled={isDownloading === file.id}
+                          className={`text-blue-600 hover:text-blue-900 mr-4 ${isDownloading === file.id ? 'opacity-50 cursor-not-allowed' : ''
+                            }`}
                         >
-                          ⬇️ Download
+                          {isDownloading === file.id ? (
+                            <span className="flex items-center">
+                              <svg className="animate-spin -ml-1 mr-1 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Downloading...
+                            </span>
+                          ) : (
+                            '⬇️ Download'
+                          )}
                         </button>
                         <button
                           onClick={() => handleDelete(file.id)}
-                          className="text-red-600 hover:text-red-900"
+                          disabled={isDeleting === file.id}
+                          className={`text-red-600 hover:text-red-900 ${isDeleting === file.id ? 'opacity-50 cursor-not-allowed' : ''
+                            }`}
                         >
-                          🗑️ Delete
+                          {isDeleting === file.id ? (
+                            <span className="flex items-center">
+                              <svg className="animate-spin -ml-1 mr-1 h-4 w-4 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Deleting...
+                            </span>
+                          ) : (
+                            '🗑️ Delete'
+                          )}
                         </button>
                       </td>
                     </tr>
