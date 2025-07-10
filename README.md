@@ -15,7 +15,7 @@ A proof-of-concept implementation showcasing distributed file uploads using Uplo
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: Next.js 14 (App Router)
+- **Frontend**: Next.js 15 (App Router)
 - **Styling**: Tailwind CSS
 - **Database**: SQLite (via Drizzle ORM)
 - **File Storage**: UploadThing (multi-server)
