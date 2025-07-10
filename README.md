@@ -37,7 +37,7 @@ A proof-of-concept implementation showcasing distributed file uploads using Uplo
 
 3. Set up environment variables:
    ```bash
-   cp .env.example .env
+   cp example.env .env
    ```
    Fill in your UploadThing API keys and database configuration.
 
