@@ -2,7 +2,8 @@
 
 import { utpApis, uploads, UtServerNumber, db, UploadPart } from "@/lib";
 import { eq } from "drizzle-orm";
-import { combineFiles, splitFile } from "@/lib/utils/file";
+// import { combineFiles, splitFile } from "@/lib/utils/file";
+import { createHash } from "crypto";
 import { UUID } from "crypto";
 import { UploadFileResult } from "uploadthing/types";
 
@@ -36,46 +37,74 @@ async function utUploadMultiFile(files: File[]) {
     return details;
 }
 
-export async function UploadFiles(files: File[]) {
-    try {
-        // Process all files in parallel but wait for all to complete
-        await Promise.all(files.map(async (file) => {
-            try {
-                const fileChunks = await splitFile(file, 5);
+// Accepts encrypted chunks as FormData and uploads them to UploadThing servers after integrity checks
+export async function UploadEncrypted(formData: FormData): Promise<{ id: string }>{
+    const metaRaw = formData.get("meta");
+    const fileHash = formData.get("file_hash");
+    const chunkHashesRaw = formData.get("chunk_hashes");
 
-                // Upload all chunks in parallel
-                const uploadResults = await utUploadMultiFile(fileChunks);
-
-                // Process upload results
-                const fileChunksDetails: UploadPart[] = uploadResults.map((chunk) => {
-                    if (!chunk.data?.key) {
-                        throw new Error(`Failed to upload chunk: Missing key for ${chunk.data?.name}`);
-                    }
-                    return {
-                        key: chunk.data.key,
-                        name: chunk.data.name,
-                        url: chunk.data.ufsUrl,
-                    };
-                });
-                console.log(JSON.stringify(uploadResults))
-                // Insert into database
-                await db.insert(uploads).values({
-                    originalFileName: file.name,
-                    mimeType: file.type,
-                    originalSize:file.size,
-                    uploadParts: fileChunksDetails
-                });
-            } catch (fileError) {
-                console.error(`Error processing file ${file.name}:`, fileError);
-                throw fileError; // Re-throw to be caught by the outer try-catch
-            }
-        }));
-
-        return true;
-    } catch (e) {
-        console.error("Error in UploadFiles:", e);
-        return false;
+    if (!metaRaw || !fileHash || !chunkHashesRaw) {
+        throw new Error("Missing required fields: meta, file_hash, chunk_hashes");
     }
+
+    const meta = JSON.parse(String(metaRaw)) as { filename: string; size: number; mime: string };
+    const chunkHashes = JSON.parse(String(chunkHashesRaw)) as string[]; // base64 strings
+
+    // Collect File entries from FormData in deterministic order by part index encoded in name
+    const chunkEntries: { index: number; file: File }[] = [];
+    for (const [key, value] of (formData as any).entries()) {
+        if (value instanceof File && key.startsWith("chunk")) {
+            const idx = parseInt(key.replace("chunk", ""));
+            chunkEntries.push({ index: idx, file: value });
+        }
+    }
+    chunkEntries.sort((a, b) => a.index - b.index);
+
+    if (chunkEntries.length !== chunkHashes.length) {
+        throw new Error("Chunk count does not match hash count");
+    }
+
+    // Verify each chunk hash H(IV||C)
+    await Promise.all(chunkEntries.map(async ({ file }, i) => {
+        const buf = Buffer.from(await file.arrayBuffer());
+        const h = createHash("sha256").update(buf).digest("base64");
+        if (h !== chunkHashes[i]) {
+            throw new Error(`Chunk ${i} hash mismatch`);
+        }
+    }));
+
+    // Upload in parallel to each UploadThing server
+    const filesToUpload = chunkEntries.map(({ file }) => file);
+    const uploadResults = await utUploadMultiFile(filesToUpload);
+
+    const fileChunksDetails: UploadPart[] = uploadResults.map((chunk, i) => {
+        if (!chunk.data?.key) {
+            throw new Error(`Failed to upload chunk: Missing key for ${chunk.data?.name}`);
+        }
+        return {
+            key: chunk.data.key,
+            name: chunk.data.name,
+            url: chunk.data.ufsUrl,
+            hash: chunkHashes[i],
+        } as UploadPart;
+    });
+
+    // Verify overall file_hash = H(h0||h1||...)
+    const combinedHashesBuffer = Buffer.from(chunkHashes.join(""));
+    const combinedHash = createHash("sha256").update(combinedHashesBuffer).digest("base64");
+    if (combinedHash !== fileHash) {
+        throw new Error("file_hash mismatch");
+    }
+
+    const inserted = await db.insert(uploads).values({
+        originalFileName: meta.filename,
+        mimeType: meta.mime,
+        originalSize: meta.size,
+        uploadParts: fileChunksDetails,
+        fileHash: String(fileHash),
+    }).returning({ id: uploads.id });
+
+    return { id: inserted[0].id };
 }
 
 export async function DeleteFile(id: UUID) {
@@ -97,29 +126,23 @@ export async function GetAllFiles() {
     return files;
 }
 
-export async function GetFile(id: UUID): Promise<{ file: File, name: string }> {
+export async function GetFile(id: UUID): Promise<{
+    originalFileName: string;
+    mimeType: string;
+    originalSize: number;
+    fileHash: string;
+    uploadParts: UploadPart[];
+}> {
     try {
-        const listKey = await db.select().from(uploads).where(eq(uploads.id, id));
-        console.log(listKey[0].uploadParts)
-        const responses = await Promise.all(
-            listKey[0].uploadParts.map(async (part) => {
-                const response = await fetch(part.url);
-                if (!response.ok) throw new Error(`Failed to fetch part ${part.name}`);
-                return {
-                    name: part.name,
-                    blob: await response.blob()
-                };
-            })
-        );
-
-        // Create File objects from blobs with their original part names
-        const chunkFiles = responses.map(response =>
-            new File([response.blob], response.name, {
-                type: listKey[0].mimeType
-            })
-        );
-
-        return { file: await combineFiles(chunkFiles, listKey[0].originalFileName), name: listKey[0].originalFileName };
+        const rows = await db.select().from(uploads).where(eq(uploads.id, id));
+        const rec = rows[0];
+        return {
+            originalFileName: rec.originalFileName,
+            mimeType: rec.mimeType,
+            originalSize: rec.originalSize,
+            fileHash: rec.fileHash,
+            uploadParts: rec.uploadParts,
+        };
     } catch (error) {
         console.error("Error in GetFile:", error);
         throw error;

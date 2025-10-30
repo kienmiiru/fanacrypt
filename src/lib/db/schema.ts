@@ -12,6 +12,7 @@ const uploads = sqliteTable('uploads', {
     originalSize: integer('original_size').notNull(),
     mimeType: text('mime_type').notNull(),
     uploadParts: text('upload_parts', { mode: 'json' }).$type<UploadPart[]>().notNull(),
+    fileHash: text('file_hash').notNull(),
     createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 });
 

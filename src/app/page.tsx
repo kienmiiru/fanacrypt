@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from 'react';
-import { UploadFiles, GetAllFiles, DeleteFile, GetFile } from './actions';
+import { UploadEncrypted, GetAllFiles, DeleteFile, GetFile } from './actions';
 import { UploadPart } from '@/lib';
 import { UUID } from 'crypto';
+import { aesGcmDecrypt, aesGcmEncrypt, concatBytes, fromBase64, generateAesGcmKey, randomIv, sha256, toBase64 } from '@/lib/utils/crypto';
 
 export default function FileUploadUI() {
   const [files, setFiles] = useState<{
@@ -21,10 +22,27 @@ export default function FileUploadUI() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [phaseMessage, setPhaseMessage] = useState<string>('');
+  const [shareLink, setShareLink] = useState<string | null>(null);
+  const [shareKey, setShareKey] = useState<string | null>(null);
 
   useEffect(() => {
     loadFiles();
+    // Auto download if URL contains #/id:key
+    tryAutoDownloadFromHash();
   }, []);
+
+  const tryAutoDownloadFromHash = async () => {
+    if (typeof window === 'undefined') return;
+    const hash = window.location.hash; // format: #/id:key
+    if (!hash || !hash.startsWith('#/')) return;
+    const payload = hash.slice(2);
+    if (!payload.includes(':')) return;
+    const [id, key] = payload.split(':');
+    if (id && key) {
+      await handleDownload(id, key);
+    }
+  };
 
   const loadFiles = async () => {
     setIsLoadingFiles(true);
@@ -49,20 +67,75 @@ export default function FileUploadUI() {
 
     setIsUploading(true);
     setUploadProgress(0);
+    setPhaseMessage('Preparing upload...');
 
     try {
       // Simulate progress (replace with actual progress events if available)
       const progressInterval = setInterval(() => {
         setUploadProgress((prev) => {
           const newProgress = prev + Math.random() * 10;
-          return newProgress >= 100 ? 100 : newProgress;
+          return newProgress >= 98 ? 98 : newProgress;
         });
       }, 300);
 
-      const success = await UploadFiles([selectedFile]);
+      // Client-side split, encrypt, hash
+      // For simplicity, reuse existing splitter to get 5 equal chunks
+      setPhaseMessage('Splitting file...');
+      const chunks = await (async () => {
+        // Implement simple equal slicing without creating Files twice
+        const buf = new Uint8Array(await selectedFile.arrayBuffer());
+        const n = 5;
+        const size = Math.ceil(buf.byteLength / n);
+        const parts: Uint8Array[] = [];
+        for (let i = 0; i < n; i++) {
+          const start = i * size;
+          const end = Math.min(start + size, buf.byteLength);
+          if (start >= end) break;
+          parts.push(buf.subarray(start, end));
+        }
+        return parts;
+      })();
+
+      setPhaseMessage('Generating key...');
+      const { key, base64Key } = await generateAesGcmKey();
+
+      const encryptedBlobs: Blob[] = [];
+      const chunkHashes: string[] = [];
+
+      setPhaseMessage('Encrypting chunks...');
+      for (let i = 0; i < chunks.length; i++) {
+        const iv = randomIv(12);
+        const ct = await aesGcmEncrypt(key, iv, chunks[i]);
+        const bi = concatBytes([iv, ct]);
+        const h = await sha256(bi);
+        chunkHashes.push(toBase64(h));
+        const arrBuf = bi.buffer.slice(bi.byteOffset, bi.byteOffset + bi.byteLength);
+        encryptedBlobs.push(new Blob([arrBuf as unknown as BlobPart]));
+      }
+
+      // file_hash = H(h0||h1||...)
+      setPhaseMessage('Computing file hash...');
+      const combinedHashInput = new TextEncoder().encode(chunkHashes.join(""));
+      const fileHashBytes = await sha256(combinedHashInput);
+      const fileHash = toBase64(fileHashBytes);
+
+      setPhaseMessage('Uploading encrypted chunks...');
+      const form = new FormData();
+      form.append('meta', JSON.stringify({ filename: selectedFile.name, size: selectedFile.size, mime: selectedFile.type }));
+      form.append('file_hash', fileHash);
+      form.append('chunk_hashes', JSON.stringify(chunkHashes));
+      encryptedBlobs.forEach((blob, i) => form.append(`chunk${i}`, new File([blob], `${selectedFile.name}.part${i}`)));
+
+      const { id } = await UploadEncrypted(form);
       clearInterval(progressInterval);
 
-      if (success) {
+      // Show shareable link with key in fragment
+      const link = `${window.location.origin}/#/` + id + ':' + base64Key;
+      setShareLink(link);
+      setShareKey(base64Key);
+      setPhaseMessage('Upload complete. Link and key are available below.');
+
+      if (id) {
         setUploadProgress(100);
         await new Promise(resolve => setTimeout(resolve, 500)); // Show completion briefly
         await loadFiles();
@@ -73,6 +146,7 @@ export default function FileUploadUI() {
       }
     } catch (error) {
       console.error('Upload failed:', error);
+      setPhaseMessage('Upload failed. Please try again.');
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -95,14 +169,47 @@ export default function FileUploadUI() {
     }
   };
 
-  const handleDownload = async (id: string) => {
+  const handleDownload = async (id: string, keyFromFragment?: string) => {
     setIsDownloading(id);
     try {
-      const fileData = await GetFile(id as UUID);
-      const url = URL.createObjectURL(fileData.file);
+      setPhaseMessage('Fetching metadata...');
+      const meta = await GetFile(id as UUID);
+      // Ask user for key (base64) or parse from URL fragment if present
+      let keyB64 = keyFromFragment || window.location.hash.split('/').pop()?.split(':')[1];
+      if (!keyB64) keyB64 = window.prompt('Enter decryption key (base64):') || '';
+      if (!keyB64) throw new Error('Missing decryption key');
+
+      setPhaseMessage('Preparing decryption key...');
+      const rawKey = fromBase64(keyB64);
+      const rawKeyBuf = rawKey.buffer.slice(rawKey.byteOffset, rawKey.byteOffset + rawKey.byteLength);
+      const cryptoKey = await crypto.subtle.importKey('raw', rawKeyBuf as unknown as BufferSource, { name: 'AES-GCM' }, false, ['decrypt']);
+
+      // Download each encrypted chunk (IV||C), verify hash, decrypt
+      const parts = meta.uploadParts;
+      const plaintextChunks: Uint8Array[] = [];
+      setPhaseMessage('Downloading and verifying chunks...');
+      await Promise.all(parts.map(async (p, i) => {
+        const res = await fetch(p.url);
+        if (!res.ok) throw new Error('Failed to fetch chunk ' + i);
+        const buf = new Uint8Array(await res.arrayBuffer());
+        const h = await sha256(buf);
+        const hB64 = toBase64(h);
+        if (hB64 !== p.hash) throw new Error(`Hash mismatch on chunk ${i}`);
+        const iv = buf.subarray(0, 12);
+        const ct = buf.subarray(12);
+        setPhaseMessage(`Decrypting chunk ${i + 1}/${parts.length}...`);
+        const pt = await aesGcmDecrypt(cryptoKey as CryptoKey, iv, ct);
+        plaintextChunks[i] = pt;
+      }));
+
+      setPhaseMessage('Merging chunks...');
+      const combined = concatBytes(plaintextChunks);
+      const combinedBuf = combined.buffer.slice(combined.byteOffset, combined.byteOffset + combined.byteLength);
+      const file = new File([combinedBuf as unknown as BlobPart], meta.originalFileName, { type: meta.mimeType });
+      const url = URL.createObjectURL(file);
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileData.name;
+      a.download = meta.originalFileName;
       document.body.appendChild(a);
       a.click();
 
@@ -111,8 +218,10 @@ export default function FileUploadUI() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 100);
+      setPhaseMessage('Download complete.');
     } catch (error) {
       console.error('Download failed:', error);
+      setPhaseMessage('Download failed. Please check the link and key.');
     } finally {
       setIsDownloading(null);
     }
@@ -183,7 +292,7 @@ export default function FileUploadUI() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                      Uploading... ({Math.round(uploadProgress)}%)
+                      {phaseMessage || 'Uploading...'} ({Math.round(uploadProgress)}%)
                     </>
                   ) : (
                     '🚀 Upload'
@@ -198,6 +307,20 @@ export default function FileUploadUI() {
                     ></div>
                   </div>
                 )}
+              </div>
+            )}
+            {shareLink && (
+              <div className="mt-4 p-3 rounded border border-gray-700 bg-neutral-900 text-gray-200 space-y-2">
+                <div className="text-sm">Shareable Link</div>
+                <div className="flex items-center gap-2">
+                  <input className="w-full bg-neutral-800 text-gray-100 px-2 py-1 rounded" value={shareLink} readOnly />
+                  <button className="px-2 py-1 bg-neutral-800 rounded text-gray-200" onClick={() => navigator.clipboard.writeText(shareLink!)}>Copy</button>
+                </div>
+                <div className="text-sm mt-2">Base64 Key</div>
+                <div className="flex items-center gap-2">
+                  <input className="w-full bg-neutral-800 text-gray-100 px-2 py-1 rounded" value={shareKey || ''} readOnly />
+                  <button className="px-2 py-1 bg-neutral-800 rounded text-gray-200" onClick={() => navigator.clipboard.writeText(shareKey || '')}>Copy</button>
+                </div>
               </div>
             )}
           </div>
@@ -269,7 +392,7 @@ export default function FileUploadUI() {
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                               </svg>
-                              Downloading...
+                              {phaseMessage || 'Downloading...'}
                             </span>
                           ) : (
                             '⬇️ Download'
