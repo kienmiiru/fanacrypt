@@ -16,4 +16,9 @@ const uploads = sqliteTable('uploads', {
     createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 });
 
-export { db, uploads };
+const loginParameter = sqliteTable('login_parameter', {
+    id: integer('id').primaryKey().$defaultFn(() => 1), // Single row for single user
+    publicKey: text('public_key').notNull(),
+})
+
+export { db, uploads, loginParameter };

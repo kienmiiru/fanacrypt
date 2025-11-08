@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { createHash } from "crypto";
 import { UUID } from "crypto";
 import { UploadFileResult } from "uploadthing/types";
+import { verifySession } from "./auth-actions";
 
 
 async function utUploadFiles(files: File[], server: UtServerNumber) {
@@ -37,8 +38,20 @@ async function utUploadMultiFile(files: File[]) {
     return details;
 }
 
+// Helper function to verify session
+async function requireAuth(sessionToken: string | null | undefined): Promise<void> {
+  if (!sessionToken) {
+    throw new Error("Authentication required");
+  }
+  const isValid = await verifySession(sessionToken);
+  if (!isValid) {
+    throw new Error("Invalid or expired session");
+  }
+}
+
 // Accepts encrypted chunks as FormData and uploads them to UploadThing servers after integrity checks
-export async function UploadEncrypted(formData: FormData): Promise<{ id: string }>{
+export async function UploadEncrypted(formData: FormData, sessionToken?: string | null): Promise<{ id: string }>{
+    await requireAuth(sessionToken);
     const metaRaw = formData.get("meta");
     const fileHash = formData.get("file_hash");
     const chunkHashesRaw = formData.get("chunk_hashes");
@@ -107,7 +120,8 @@ export async function UploadEncrypted(formData: FormData): Promise<{ id: string 
     return { id: inserted[0].id };
 }
 
-export async function DeleteFile(id: UUID) {
+export async function DeleteFile(id: UUID, sessionToken?: string | null) {
+    await requireAuth(sessionToken);
     try {
         const listKey = await db.select().from(uploads).where(eq(uploads.id, id));
         await Promise.all(listKey[0].uploadParts.map(async (key, i) => {
@@ -121,12 +135,13 @@ export async function DeleteFile(id: UUID) {
         return false
     }
 }
-export async function GetAllFiles() {
+export async function GetAllFiles(sessionToken?: string | null) {
+    await requireAuth(sessionToken);
     const files = await db.select().from(uploads);
     return files;
 }
 
-export async function GetFile(id: UUID): Promise<{
+export async function GetFile(id: UUID, sessionToken?: string | null): Promise<{
     originalFileName: string;
     mimeType: string;
     originalSize: number;

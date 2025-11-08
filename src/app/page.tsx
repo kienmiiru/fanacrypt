@@ -5,8 +5,9 @@ import { UploadEncrypted, GetAllFiles, DeleteFile, GetFile } from './actions';
 import { UploadPart } from '@/lib';
 import { UUID } from 'crypto';
 import { aesGcmDecrypt, aesGcmEncrypt, concatBytes, fromBase64, generateAesGcmKey, randomIv, sha256, toBase64 } from '@/lib/utils/crypto';
+import AuthWrapper from './auth';
 
-export default function FileUploadUI() {
+function FileUploadUI() {
   const [files, setFiles] = useState<{
     id: string;
     originalFileName: string;
@@ -25,8 +26,22 @@ export default function FileUploadUI() {
   const [phaseMessage, setPhaseMessage] = useState<string>('');
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareKey, setShareKey] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  // Get session token from localStorage
+  const getSessionToken = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('fanacrypt_session_token');
+  };
+
+  // Use ref to prevent duplicate execution in React StrictMode
+  const hasInitialized = useRef(false);
 
   useEffect(() => {
+    // Prevent duplicate execution (React StrictMode runs effects twice in development)
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+
     loadFiles();
     // Auto download if URL contains #/id:key
     tryAutoDownloadFromHash();
@@ -47,7 +62,7 @@ export default function FileUploadUI() {
   const loadFiles = async () => {
     setIsLoadingFiles(true);
     try {
-      const loadedFiles = await GetAllFiles();
+      const loadedFiles = await GetAllFiles(getSessionToken());
       setFiles(loadedFiles);
     } catch (error) {
       console.error('Failed to load files:', error);
@@ -126,7 +141,7 @@ export default function FileUploadUI() {
       form.append('chunk_hashes', JSON.stringify(chunkHashes));
       encryptedBlobs.forEach((blob, i) => form.append(`chunk${i}`, new File([blob], `${selectedFile.name}.part${i}`)));
 
-      const { id } = await UploadEncrypted(form);
+      const { id } = await UploadEncrypted(form, getSessionToken());
       clearInterval(progressInterval);
 
       // Show shareable link with key in fragment
@@ -158,7 +173,7 @@ export default function FileUploadUI() {
 
     setIsDeleting(id);
     try {
-      const success = await DeleteFile(id as UUID);
+      const success = await DeleteFile(id as UUID, getSessionToken());
       if (success) {
         await loadFiles();
       }
@@ -171,11 +186,12 @@ export default function FileUploadUI() {
 
   const handleDownload = async (id: string, keyFromFragment?: string) => {
     setIsDownloading(id);
+    setDownloadError(null); // Clear any previous errors
     try {
       setPhaseMessage('Fetching metadata...');
-      const meta = await GetFile(id as UUID);
+      const meta = await GetFile(id as UUID, getSessionToken());
       // Ask user for key (base64) or parse from URL fragment if present
-      let keyB64 = keyFromFragment || window.location.hash.split('/').pop()?.split(':')[1];
+      let keyB64 = keyFromFragment || window.location.hash.split('#/').pop()?.split(':')[1];
       if (!keyB64) keyB64 = window.prompt('Enter decryption key (base64):') || '';
       if (!keyB64) throw new Error('Missing decryption key');
 
@@ -219,9 +235,12 @@ export default function FileUploadUI() {
         URL.revokeObjectURL(url);
       }, 100);
       setPhaseMessage('Download complete.');
+      setDownloadError(null);
     } catch (error) {
       console.error('Download failed:', error);
-      setPhaseMessage('Download failed. Please check the link and key.');
+      const errorMessage = (error instanceof Error && error.message) ? error.message : 'Download failed. Please check the link and key.';
+      setDownloadError(errorMessage);
+      setPhaseMessage('');
     } finally {
       setIsDownloading(null);
     }
@@ -328,7 +347,22 @@ export default function FileUploadUI() {
 
         {/* Files List */}
         <div className="bg-neutral-950 rounded-lg shadow-lg p-6 border border-gray-700">
-          <h2 className="text-xl font-semibold text-gray-200 mb-4">🗂️ Your Files</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold text-gray-200">🗂️ Your Files</h2>
+            {downloadError && (
+              <div className="flex items-center gap-2 bg-red-900/50 border border-red-700 rounded-md px-4 py-2 text-red-200 text-sm">
+                <span>⚠️</span>
+                <span>{downloadError}</span>
+                <button
+                  onClick={() => setDownloadError(null)}
+                  className="ml-2 text-red-300 hover:text-red-100"
+                  aria-label="Dismiss error"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
 
           {isLoadingFiles ? (
             <div className="flex justify-center py-8">
@@ -426,5 +460,13 @@ export default function FileUploadUI() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <AuthWrapper>
+      <FileUploadUI />
+    </AuthWrapper>
   );
 }
