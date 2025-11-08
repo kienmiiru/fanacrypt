@@ -45,6 +45,7 @@ function FileUploadUI() {
     loadFiles();
     // Auto download if URL contains #/id:key
     tryAutoDownloadFromHash();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const tryAutoDownloadFromHash = async () => {

@@ -9,7 +9,6 @@ const SESSION_TOKEN_KEY = 'fanacrypt_session_token';
 export default function AuthWrapper({ children }: { children: React.ReactNode }) {
   const [isChecking, setIsChecking] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isUserRegistered, setIsUserRegistered] = useState(false);
   const [showRegistration, setShowRegistration] = useState(false);
   const [showChangePassphrase, setShowChangePassphrase] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +24,6 @@ export default function AuthWrapper({ children }: { children: React.ReactNode })
     try {
       // Check if user is registered
       const registered = await isRegistered();
-      setIsUserRegistered(registered);
 
       if (registered) {
         // Check if session token exists and is valid
@@ -60,7 +58,6 @@ export default function AuthWrapper({ children }: { children: React.ReactNode })
       const result = await register(X.toString());
       
       if (result.success) {
-        setIsUserRegistered(true);
         setShowRegistration(false);
         // After registration, automatically log in
         await handleLogin(passphrase);

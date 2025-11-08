@@ -65,7 +65,7 @@ export async function UploadEncrypted(formData: FormData, sessionToken?: string 
 
     // Collect File entries from FormData in deterministic order by part index encoded in name
     const chunkEntries: { index: number; file: File }[] = [];
-    for (const [key, value] of (formData as any).entries()) {
+    for (const [key, value] of formData.entries()) {
         if (value instanceof File && key.startsWith("chunk")) {
             const idx = parseInt(key.replace("chunk", ""));
             chunkEntries.push({ index: idx, file: value });
@@ -149,6 +149,7 @@ export async function GetFile(id: UUID, sessionToken?: string | null): Promise<{
     uploadParts: UploadPart[];
 }> {
     try {
+        await requireAuth(sessionToken);
         const rows = await db.select().from(uploads).where(eq(uploads.id, id));
         const rec = rows[0];
         return {
